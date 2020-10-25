@@ -1,0 +1,277 @@
+//check: libfaad->Source Files->decoder.c->NeAACDecOpen(void)->adts_header_present = 1
+
+#include <stdio.h>
+#include <stdlib.h>
+#include "faac.h"
+#include "faaccfg.h"
+#include "faad.h"
+#include "neaacdec.h"
+
+typedef struct PCM_data{
+
+	int bits_per_sample;
+	int sample_per_sec;
+	int data_size;
+	short *data;
+
+} PCM_data;
+
+
+
+int main(){
+	FILE *fp;
+	FILE *ftxt;
+	FILE *fout;
+	FILE *fwav;
+	FILE *fx;
+
+	//Encoding variables
+
+	PCM_data pcm;
+
+	unsigned long faacInputSamples;
+	unsigned long faacMaxOutputBytes;
+	faacEncHandle inst;
+	faacEncConfigurationPtr instConfig;
+	int set_result; // "0" indicates new configuration has been set succesfully.
+	unsigned char *outputBuffer;
+	
+
+	//Decoding variables
+
+	NeAACDecHandle instD;
+	NeAACDecConfigurationPtr config;
+	NeAACDecFrameInfo hInfo;
+	unsigned long capabilities;
+	unsigned char newConfig;
+	unsigned long samplerate;
+	unsigned char channels;
+	unsigned long buffer_size = 2048;
+	unsigned char initBuf[2048];
+	long initParameter;
+	void *output;
+	unsigned char buffer[1024];
+	int decoded_bytes = 0;
+
+	//Defining the .wav parameters and containers.
+	char riff_header[4];
+	char riff_chunk[4];
+	char wave_header[4];
+
+	char fmt_header[4];
+	int fmt_chunk_size;
+	short audio_format;
+	short num_channels;
+	int sample_rate;
+	int byte_rate;
+	short sample_alignment;
+	short bit_depth;
+
+	char data_header[4];
+	int data_chunk_size;
+
+	//Obtaining the .wav header data.
+	fp = fopen("voice_48_short.wav", "rb");
+	fread(riff_header, 1, 4, fp);
+	fread(riff_chunk, 1, 4, fp);
+	fread(wave_header, 1, 4, fp);
+	fread(fmt_header, 1, 4, fp);
+	fread(&fmt_chunk_size, 4, 1, fp);
+	fread(&audio_format, 2, 1, fp);
+	fread(&num_channels, 2, 1, fp);
+	fread(&sample_rate, 4, 1, fp);
+	fread(&byte_rate, 4, 1, fp);
+	fread(&sample_alignment, 2, 1, fp);
+	fread(&bit_depth, 2, 1, fp);
+	fread(data_header, 1, 4, fp);
+	fread(&data_chunk_size, 4, 1, fp);
+
+	printf("channel number of the input: %d\n", num_channels);
+
+	pcm.sample_per_sec = sample_rate;
+	pcm.bits_per_sample = bit_depth;
+	
+	
+	pcm.data_size = data_chunk_size / 2;
+    //Creating space for PCM data.
+	pcm.data = (short *)calloc(pcm.data_size, sizeof(short));
+	//putting samples into data array.
+	int n;
+	int holder;
+	for (n = 0; n < pcm.data_size; n++){ 
+		fread(&holder, 2, 1, fp);
+		pcm.data[n] = holder;
+	}
+
+	fclose(fp);
+
+	/////ENDCODING STARTS..
+
+	inst = faacEncOpen(48000, 1, &faacInputSamples, &faacMaxOutputBytes);
+	if (!inst){
+		printf("error: instant could not be created!");
+	}
+	//Arranging the configuration.
+	instConfig = faacEncGetCurrentConfiguration(inst);
+	instConfig->mpegVersion = MPEG4; //check MPEG2.
+	instConfig->aacObjectType = LOW; //MAIN or LTP also available, check the difference.
+	instConfig->allowMidside = 0; //check Midside coding, 0 or 1.
+	instConfig->useLfe = 0; //LFE channel activision.
+	instConfig->useTns = 0; //TNS?
+	instConfig->bitRate = 48000; //bits per sec per channel.
+	instConfig->bandWidth = 0; //Max bandwidth. 
+	instConfig->inputFormat = FAAC_INPUT_16BIT;
+	instConfig->outputFormat = 1;
+
+	set_result = faacEncSetConfiguration(inst, instConfig);
+
+	
+
+	/////DECODING STARTS..
+
+	capabilities = NeAACDecGetCapabilities();
+	printf("capability is: %lu\n", capabilities);
+
+	instD = NeAACDecOpen();
+
+	config = NeAACDecGetCurrentConfiguration(instD);
+	config->defObjectType = LC;
+	config->defSampleRate = 48000;
+	config->useOldADTSFormat = 0;
+	config->outputFormat = FAAD_FMT_16BIT;
+
+	newConfig = NeAACDecSetConfiguration(instD, config);
+
+	fx = fopen("encoded_data.txt", "wb+");
+	ftxt = fopen("encoded_data.txt", "rb+");
+	fout = fopen("finalOutput.txt", "wb+");
+	fwav = fopen("finalOutput.wav", "wb+");
+
+	//Forming the header for .wav file.
+	fwrite(riff_header, 1, 4, fwav);
+	fwrite(riff_chunk, 1, 4, fwav);
+	fwrite(wave_header, 1, 4, fwav);
+	fwrite(fmt_header, 1, 4, fwav);
+	fwrite(&fmt_chunk_size, 4, 1, fwav);
+	fwrite(&audio_format, 2, 1, fwav);
+	fwrite(&num_channels, 2, 1, fwav);
+	fwrite(&sample_rate, 4, 1, fwav);
+	fwrite(&byte_rate, 4, 1, fwav);
+	fwrite(&sample_alignment, 2, 1, fwav);
+	fwrite(&bit_depth, 2, 1, fwav);
+	fwrite(data_header, 1, 4, fwav);
+
+	// To initialize the decoder, the first 2048 bytes are encoded and given to NeAACDecInit function.
+	for (size_t t = 0; t < 2048; t++)
+	{
+		initBuf[t] = pcm.data[t];
+		printf("%d ", initBuf[t]);
+	}
+
+	initParameter = NeAACDecInit(instD, initBuf, buffer_size, &samplerate, &channels);
+	printf("decoder channel data: %hi\n", channels);
+
+	outputBuffer = malloc(data_chunk_size*sizeof(char)); //creating space for encoded samples.
+
+	int byteCounter = 0;
+	int done = 1;
+	int end = 0;
+	int dummy = 1;
+	int dataCounter;
+	short inBuffer[1024];
+	while (1){
+		int counter = 0;
+		for (dataCounter = (dummy - 1) * 1024; dataCounter < dummy * 1024; dataCounter++){
+			inBuffer[counter] = pcm.data[dataCounter];
+			counter++;
+		}
+		int numOfBytesWritten = faacEncEncode(inst, inBuffer, faacInputSamples, outputBuffer, faacMaxOutputBytes);
+		fwrite(outputBuffer, numOfBytesWritten, 1, fx);
+
+		output = NeAACDecDecode(instD, &hInfo, outputBuffer, numOfBytesWritten);
+		if ((hInfo.error == 0) && (hInfo.samples > 0))
+		{
+			fwrite(output, 1, hInfo.samples, fout);
+		}
+
+		end++;
+		byteCounter = byteCounter + hInfo.bytesconsumed;
+		if ((dummy == pcm.data_size / 1024) || (dummy > pcm.data_size / 1024))
+			break;
+		dummy++;
+	}
+	printf("dummy is: %d", dummy);
+	fseek(fx, 0L, SEEK_END);
+	int encode_size = ftell(fx);
+	printf("encoded data size is: %d\n", encode_size);
+
+	fclose(fx);
+
+	faacEncClose(inst);
+
+	//Getting the size of decoded data and putting the .wav header.
+	fseek(fout, 0L, SEEK_END);
+	int sz = ftell(fout);
+	decoded_bytes = sz;
+	fwrite(&decoded_bytes, 4, 1, fwav);
+
+	//Writing the decoded data into the .wav file.
+	fseek(fout, 0L, SEEK_SET);
+	char x;
+	int k;
+	for ( k = 0; k < sz; k++)
+	{
+		fread(&x, 1, 1, fout);
+		fwrite(&x, 1, 1, fwav);
+	}
+
+	fclose(ftxt);
+	fclose(fout);
+	fclose(fwav);
+
+	NeAACDecClose(instD);
+	
+	/*checking the values.
+
+	int a;
+	int b;
+	int c;
+	int d;
+	int e;
+
+	for (a = 0; a < 4; a++){
+		printf("%c", riff_header[a]);
+	}
+	printf("\n");
+	for (e = 0; e < 4; e++){
+		printf("%c", fmt_header[e]);
+	}
+	printf("\n");
+	for (b = 0; b < 4; b++){
+		printf("%c", wave_header[b]);
+	}
+	printf("\n");
+	for (c = 0; c < 4; c++){
+		printf("%c", riff_chunk[c]);
+	}
+	printf("\n");
+	for (d = 0; d < 4; d++){
+		printf("%c", data_header[d]);
+	}
+	printf("\n");
+	printf("Format chunk size: %d\n", fmt_chunk_size);
+	printf("Audio format: %d\n", audio_format);
+
+	printf("Number of channels: %d\n", num_channels);
+	printf("Sample rate: %d\n", sample_rate);
+
+	printf("Byte rate: %d\n", byte_rate);
+	printf("Sample alignment: %d\n", sample_alignment);
+	printf("Bit depth: %d\n", bit_depth);
+
+	printf("Data chunk size: %d\n", data_chunk_size);
+	printf("Size of short: %hi\n", sizeof(short));
+	*/
+
+	return 0;
+}
